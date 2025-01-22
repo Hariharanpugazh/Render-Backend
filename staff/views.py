@@ -587,7 +587,7 @@ def fetch_mcq_assessments(request):
         return Response({"error": str(e)}, status=500)
 
 
-@api_view(["GET", "PUT"])  # Allow both GET and PUT requests
+@api_view(["GET", "PUT"])
 @permission_classes([AllowAny])
 @authentication_classes([])
 def get_staff_profile(request):
@@ -596,27 +596,35 @@ def get_staff_profile(request):
     PUT: Update staff profile details.
     """
     try:
+        # Retrieve JWT token from cookies
         jwt_token = request.COOKIES.get("jwt")
+        print(f"JWT Token Retrieved: {jwt_token}")
         if not jwt_token:
+            print("JWT Token not found in cookies")
             raise AuthenticationFailed("Authentication credentials were not provided.")
 
         # Decode JWT token
         try:
             decoded_token = jwt.decode(jwt_token, 'test', algorithms=["HS256"])
+            print(f"Decoded Token: {decoded_token}")
         except jwt.ExpiredSignatureError:
+            print("Expired JWT Token")
             raise AuthenticationFailed("Access token has expired. Please log in again.")
         except jwt.InvalidTokenError:
+            print("Invalid JWT Token")
             raise AuthenticationFailed("Invalid token. Please log in again.")
-        
+
+        # Extract staff ID from the decoded token
         staff_id = decoded_token.get("staff_user")
-
         if not staff_id:
+            print("Staff ID missing in token payload")
             raise AuthenticationFailed("Invalid token payload.")
+        print(f"Decoded staff ID: {staff_id}")
 
-        # Fetch the staff details from MongoDB using ObjectId
+        # Fetch staff details from MongoDB
         staff = staff_collection.find_one({"_id": ObjectId(staff_id)})
-
         if not staff:
+            print(f"Staff with ID {staff_id} not found")
             return Response({"error": "Staff not found"}, status=404)
 
         # Handle GET request
@@ -631,10 +639,8 @@ def get_staff_profile(request):
 
         # Handle PUT request
         if request.method == "PUT":
-            data = request.data  # Extract new data from request body
+            data = request.data
             updated_data = {}
-
-            # Update fields if they are provided
             if "name" in data:
                 updated_data["full_name"] = data["name"]
             if "email" in data:
@@ -645,18 +651,18 @@ def get_staff_profile(request):
                 updated_data["collegename"] = data["collegename"]
 
             if updated_data:
-                # Update the document in the database
                 staff_collection.update_one(
                     {"_id": ObjectId(staff_id)},
                     {"$set": updated_data}
                 )
+                print(f"Updated Staff Data: {updated_data}")
                 return Response({"message": "Profile updated successfully"}, status=200)
 
             return Response({"error": "No fields provided for update"}, status=400)
 
     except AuthenticationFailed as auth_error:
+        print(f"Authentication error: {auth_error}")
         return Response({"error": str(auth_error)}, status=401)
     except Exception as e:
         print(f"Unexpected error: {e}")
         return Response({"error": "An unexpected error occurred"}, status=500)
-
