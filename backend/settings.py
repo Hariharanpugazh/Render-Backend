@@ -9,6 +9,7 @@ https://docs.djangoproject.com/en/5.1/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.1/ref/settings/
 """
+
 import os
 from pathlib import Path
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -22,7 +23,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = "django-insecure-%1l2^d$2q8xuwtmv-z=_!&529loppvl)ikcs0&ef=safzcn=uw"
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = False
+DEBUG = True
 
 ALLOWED_HOSTS = ['.vercel.app', 'localhost', 'https://vercel-sandy-xi-12.vercel.app' ]
 
@@ -79,23 +80,21 @@ WSGI_APPLICATION = "backend.wsgi.application"
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",  # Add the origin of your frontend application
     "http://localhost:3001", 
-    'https://portal-8dvq2n0fs-krishneshwarans-projects.vercel.app',
+    'https://portal-8dvq2n0fs-krishneshwarans-projects.vercel.app/', 
     'https://vercel-sandy-xi-12.vercel.app',
     "capacitor://localhost",
     "ionic://localhost",
     "https://localhost",
       # Add the origin of your frontend application
 ]
-
 # Database
 # https://docs.djangoproject.com/en/5.1/ref/settings/#databases
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:3000",  # Frontend origin
     "http://localhost:3001",  # Frontend origin
     'http://127.0.0.1:8000',
-    'https://portal-8dvq2n0fs-krishneshwarans-projects.vercel.app',
+    'https://portal-8dvq2n0fs-krishneshwarans-projects.vercel.app/',
     'https://vercel-sandy-xi-12.vercel.app',
-    'https://render-frontend-f05v.onrender.com',
     "capacitor://localhost",
     "ionic://localhost",
     "https://localhost",
@@ -104,7 +103,7 @@ CSRF_TRUSTED_ORIGINS = [
 DATABASES = {
     
 }
-ALLOWED_HOSTS = ['vercel-sandy-xi-12.vercel.app', 'render-frontend-f05v.onrender.com']
+ALLOWED_HOSTS = ['*']
 
 
 # Password validation
@@ -142,7 +141,8 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.1/howto/static-files/
 
 STATIC_URL = "static/"
-
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
 
@@ -157,14 +157,7 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.AllowAny',
     ],
-    'DEFAULT_PERMISSION_CLASSES': [
-    'rest_framework.permissions.IsAuthenticated',
-    ],
 }
-
-STATIC_URL = "static/"
-STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
@@ -174,19 +167,5 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.IsAuthenticated',
     ),
 }
-CSRF_TRUSTED_ORIGINS = ['http://localhost:3000', 'https://vercel-1bge.onrender.com', 'https://render-frontend-f05v.onrender.com','https://vercel-sandy-xi-12.vercel.app', "https://localhost", "capacitor://localhost", "ionic://localhost" ]
+CSRF_TRUSTED_ORIGINS = ['http://localhost:3000', 'https://render-frontend-f05v.onrender.com', 'https://vercel-sandy-xi-12.vercel.app', "https://localhost", "capacitor://localhost", "ionic://localhost" ]
 CORS_ALLOW_CREDENTIALS = True
-
-
-
-
-
-# settings.py
-
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = 'smtp.gmail.com'  # For Gmail
-EMAIL_PORT = 587
-EMAIL_USE_TLS = True
-EMAIL_HOST_USER = 'sns.assignmentportal@gmail.com'  # Your email address
-EMAIL_HOST_PASSWORD = 'ihhg llei bxrk mfif'  # Your email password
-DEFAULT_FROM_EMAIL = 'sns.assignmentportal@gmail.com'  # Default from email address

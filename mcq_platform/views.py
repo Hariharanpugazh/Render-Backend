@@ -851,20 +851,7 @@ def publish_result(request, contestId):
         return JsonResponse({"error": str(e)}, status=500)
 
 
-import json
-from django.http import JsonResponse
-import google.generativeai as genai
 
-
-from django.core.mail import send_mail
-from django.conf import settings
-from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
-import jwt
-import json
-import logging
-from pymongo import MongoClient
-from datetime import datetime
 
 students_collection = db["students"]  # Assuming you have a students collection
 
@@ -977,93 +964,7 @@ def publish_mcq(request):
     else:
         return JsonResponse({'error': 'Invalid request method'}, status=405)
         
-# # Configure the model
-# model = genai.GenerativeModel('gemini-1.5-pro')
-# api_key = "AIzaSyCLDQgKnO55UQrnFsL2d79fxanIn_AL0WA"  # Ensure this API key is secure
-# genai.configure(api_key=api_key)
 
-# @csrf_exempt
-# def generate_questions(request):
-#     if request.method == "POST":
-#         # Getting form data from JSON request body
-#         try:
-#             data = json.loads(request.body)
-#             topic = data.get("topic")
-#             subtopic = data.get("subtopic")
-#             level = data.get("level")
-#             num_questions_input = data.get("num_questions")
-
-#             num_questions = int(num_questions_input)  # Convert the input to an integer
-#             question_type = "Multiple Choice"  # Force the question type to Multiple Choice
-
-#         except (ValueError, KeyError, TypeError):
-#             return JsonResponse({"error": "Invalid input. Please ensure all fields are provided correctly."}, status=400)
-
-#         if num_questions:
-#             # Define the prompt for Multiple Choice Questions
-#             prompt = (
-#                 f"Generate {num_questions} Multiple Choice questions "
-#                 f"on the topic '{topic}' with subtopic '{subtopic}' "
-#                 f"for a {level} level audience. "
-#                 f"Return the questions in the following format without any additional explanation or information:\n\n"
-#                 f"Question: <The generated question>\n"
-#                 f"Options: <A list of options separated by semicolons>\n"
-#                 f"Answer: <The correct answer>\n"
-#                 f"Negative Marking: <Negative marking value>\n"
-#                 f"Mark: <Mark value>\n"
-#                 f"Level: <Difficulty level>\n"
-#                 f"Tags: <Tags separated by commas>"
-#             )
-
-#             try:
-#                 # Request to Gemini AI (Google Generative AI)
-#                 response = model.generate_content(prompt)
-
-#                 # Extract the text content from the response
-#                 question_text = response._result.candidates[0].content.parts[0].text
-
-#                 # Check if the response is empty or malformed
-#                 if not question_text.strip():
-#                     return JsonResponse({"error": "No questions generated. Please try again."}, status=500)
-
-#                 questions_list = question_text.strip().split("\n\n")  # Split questions by newlines
-
-#                 # Collect questions and answers to send as JSON
-#                 questions_data = []
-
-#                 for question in questions_list:
-#                     lines = question.split("\n")
-#                     question_text = lines[0].strip().replace("Question:", "").strip()
-#                     options_text = lines[1].replace("Options: ", "").strip()
-#                     options = [opt.strip() for opt in options_text.split(";")]  # Split options by semicolons and strip whitespace
-#                     answer_text = lines[2].replace("Answer: ", "").strip()
-#                     negative_marking = lines[3].replace("Negative Marking: ", "").strip()
-#                     mark = lines[4].replace("Mark: ", "").strip()
-#                     level = lines[5].replace("Level: ", "").strip()
-#                     tags = lines[6].replace("Tags: ", "").strip().split(",")  # Split tags by commas
-#                     questions_data.append({
-#                         "topic": topic,
-#                         "subtopic": subtopic,
-#                         "level": level,
-#                         "question_type": question_type,
-#                         "question": question_text,
-#                         "options": options,
-#                         "correctAnswer": answer_text,
-#                         "negativeMarking": negative_marking,
-#                         "mark": mark,
-#                         "tags": tags
-#                     })
-
-#                 # Return a JSON response with the generated questions
-#                 return JsonResponse({
-#                     "success": "Questions generated successfully",
-#                     "questions": questions_data
-#                 })
-
-#             except Exception as e:
-#                 return JsonResponse({"error": f"Error generating questions: {str(e)}"}, status=500)
-
-#     return JsonResponse({"error": "Invalid request method."}, status=405)
 
 @csrf_exempt
 def save_assessment_questions(request):
