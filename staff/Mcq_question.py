@@ -36,25 +36,27 @@ def bulk_upload(request):
                     # Clean up potential BOM issues
                     first_key = list(row.keys())[0]
                     question = row.get(first_key, "").strip() if '\ufeff' in first_key else row.get("question", "").strip()
-                    option1 = row.get("option1", "").strip()
-                    option2 = row.get("option2", "").strip()
-                    option3 = row.get("option3", "").strip()
-                    option4 = row.get("option4", "").strip()
+                    options = [row.get(f"option{i}", "").strip() for i in range(1, 7) if row.get(f"option{i}")]
                     correctAnswer = row.get("correctAnswer", "").strip()  # Rename to correctAnswer
                     level = row.get("Level", "").strip().lower()  # Fetch level from file
-                    tags = row.get("tags", "").strip().split(",") if "tags" in row else []  # Parse tags as a list
+                    tags = row.get("tags", "").strip()  # Fetch tags as a string
+                    blooms = row.get("blooms", "").strip()  # Fetch blooms from file
 
                     # If level is missing or invalid, use 'general' as the default level
                     if not level or level not in {"easy", "medium", "hard"}:
                         level = "general"
 
+                    # Ensure there are at least 2 options and at most 6 options
+                    if len(options) < 2 or len(options) > 6:
+                        print(f"Skipping invalid row due to incorrect number of options: {row}")
+                        continue
+
                     # Skip rows with missing critical information
-                    if not all([question, option1, option2, option3, option4, correctAnswer]):
+                    if not all([question, correctAnswer]):
                         print(f"Skipping invalid row: {row}")
                         continue
 
                     # Validate answer is one of the options
-                    options = [option1, option2, option3, option4]
                     if correctAnswer not in options:
                         print(f"Invalid answer for question: {question}")
                         continue
@@ -66,7 +68,8 @@ def bulk_upload(request):
                         "options": options,
                         "correctAnswer": correctAnswer,  # Use correctAnswer
                         "level": level,  # Use level from CSV or default to 'general'
-                        "tags": tags
+                        "tags": tags,  # Store tags as a string
+                        "blooms": blooms  # Add blooms field
                     }
                     questions.append(question_data)
 
@@ -112,12 +115,15 @@ def upload_single_question(request):
             option2 = data.get("option2", "").strip()
             option3 = data.get("option3", "").strip()
             option4 = data.get("option4", "").strip()
+            option5 = data.get("option5", "").strip()  # Added option5
+            option6 = data.get("option6", "").strip()  # Added option6
             correctAnswer = data.get("answer", "").strip()  # Rename to correctAnswer
             level = data.get("level", "general").strip()  # Fix inconsistent key
             tags = data.get("tags", [])  # Default to an empty list if no tags provided
+            blooms = data.get("blooms", "").strip()  # Extract blooms level
 
             # Validate input
-            options = [option1, option2, option3, option4]
+            options = [option1, option2, option3, option4, option5, option6]
             non_empty_options = [option for option in options if option]
 
             if not all([question, correctAnswer]) or len(non_empty_options) < 2:
@@ -138,7 +144,8 @@ def upload_single_question(request):
                 "options": non_empty_options,
                 "correctAnswer": correctAnswer,  # Use correctAnswer
                 "level": level,
-                "tags": tags
+                "tags": tags,
+                "blooms": blooms  # Add blooms level
             }
 
             # Insert the question into MongoDB
@@ -194,6 +201,7 @@ def fetch_all_questions(request):
 def update_question(request, question_id):
     """
     Update an existing question in the database using a PUT request.
+    Allows between 2 and 4 options.
     """
     if request.method == "PUT":
         try:
@@ -206,7 +214,7 @@ def update_question(request, question_id):
             # Extract and clean fields
             question = data.get("question", "").strip()
             options = data.get("options", [])
-            correctAnswer = data.get("correctAnswer", "").strip()  # Ensure correctAnswer is extracted
+            correctAnswer = data.get("correctAnswer", "").strip()
             level = data.get("level", "general").strip()
             tags = data.get("tags", [])
 
@@ -214,8 +222,10 @@ def update_question(request, question_id):
             errors = []
             if not question:
                 errors.append("Question text cannot be empty.")
-            if len(options) != 4 or len(set(options)) != 4:
-                errors.append("Exactly 4 unique options are required.")
+            if len(options) < 2 or len(options) > 4:
+                errors.append("Number of options must be between 2 and 4.")
+            if len(set(options)) != len(options):
+                errors.append("Options must be unique.")
             if not correctAnswer:
                 errors.append("Answer cannot be empty.")
             if correctAnswer not in options:
@@ -227,7 +237,7 @@ def update_question(request, question_id):
             update_data = {
                 "question": question,
                 "options": options,
-                "correctAnswer": correctAnswer,  # Use correctAnswer
+                "correctAnswer": correctAnswer,
                 "level": level,
                 "tags": tags,
             }
@@ -247,7 +257,6 @@ def update_question(request, question_id):
             return JsonResponse({"error": f"Unexpected error: {str(e)}"}, status=500)
 
     return JsonResponse({"error": "Only PUT requests are allowed"}, status=405)
-
 
 @csrf_exempt
 def delete_question(request, question_id):
@@ -314,6 +323,7 @@ def create_test(request):
     return JsonResponse({"error": "Only POST requests are allowed."}, status=405)
 
 
+
 @csrf_exempt
 def update_test(request, test_id):
     if request.method == "PUT":
@@ -326,21 +336,25 @@ def update_test(request, test_id):
 
             # Extract and clean fields
             test_name = data.get("test_name", "").strip()
-            level = data.get("level", "general").strip()  # Add level field
-            tags = data.get("tags", [])  # Add tags field
+            level = data.get("level", "general").strip()
+            tags = data.get("tags", [])
+            category = data.get("category", "").strip()  # Add category field
 
             # Input validation
             errors = []
             if not test_name:
                 errors.append("Test name cannot be empty.")
+            if not category:
+                errors.append("Category cannot be empty.")
             if errors:
                 return JsonResponse({"error": errors}, status=400)
 
             # Build the update payload
             update_data = {
                 "test_name": test_name,
-                "level": level,  # Include level in update data
-                "tags": tags  # Include tags in update data
+                "level": level,
+                "tags": tags,
+                "category": category  # Include category in update data
             }
 
             # Execute the update query using test_id
@@ -358,6 +372,7 @@ def update_test(request, test_id):
             return JsonResponse({"error": f"Unexpected error: {str(e)}"}, status=500)
 
     return JsonResponse({"error": "Only PUT requests are allowed"}, status=405)
+
 
 @csrf_exempt
 def delete_test(request, test_id):
@@ -757,13 +772,16 @@ def edit_question_in_test(request, test_id, question_id):
             correctAnswer = data.get("correctAnswer", "").strip()
             level = data.get("level", "general").strip().lower()
             tags = data.get("tags", [])
+            blooms = data.get("blooms", "").strip()  # Extract blooms field
 
             # Input validation
             errors = []
             if not question:
                 errors.append("Question text cannot be empty.")
-            if len(options) != 4 or len(set(options)) != 4:
-                errors.append("Exactly 4 unique options are required.")
+            if len(options) < 2 or len(options) > 4:
+                errors.append("Number of options must be between 2 and 4.")
+            if len(set(options)) != len(options):
+                errors.append("Options must be unique.")
             if not correctAnswer:
                 errors.append("Answer cannot be empty.")
             if correctAnswer not in options:
@@ -778,16 +796,20 @@ def edit_question_in_test(request, test_id, question_id):
                 "correctAnswer": correctAnswer,
                 "level": level,
                 "tags": tags,
+                "blooms": blooms,  # Include blooms in the payload
             }
 
             # Execute the update query using question_id
             result = tests_collection.update_one(
                 {"test_id": test_id, "questions.question_id": question_id},
-                {"$set": {"questions.$.question": question,
-                          "questions.$.options": options,
-                          "questions.$.correctAnswer": correctAnswer,
-                          "questions.$.level": level,
-                          "questions.$.tags": tags}}
+                {"$set": {
+                    "questions.$.question": question,
+                    "questions.$.options": options,
+                    "questions.$.correctAnswer": correctAnswer,
+                    "questions.$.level": level,
+                    "questions.$.tags": tags,
+                    "questions.$.blooms": blooms  # Add blooms to the update
+                }}
             )
 
             # Check update status

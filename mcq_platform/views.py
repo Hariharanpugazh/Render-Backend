@@ -16,6 +16,8 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny  # Correct import for utcnow()
 from rest_framework.response import Response
 from rest_framework import status
+from bson import errors
+
 
 # Initialize MongoDB client
 client = MongoClient("mongodb+srv://krish:krish@assessment.ar5zh.mongodb.net/")
@@ -25,6 +27,8 @@ section_collection = db["MCQ_Assessment_Section_Data"]  # Replace with your coll
 assessment_questions_collection = db["MCQ_Assessment_Data"]
 mcq_report_collection = db["MCQ_Assessment_report"]
 coding_report_collection = db["coding_report"]
+staff_collection = db['staff']
+
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +126,7 @@ from datetime import datetime
 def save_data(request):
     if request.method == "POST":
         try:
-             # 1. Extract and decode the JWT token from cookies
+            # 1. Extract and decode the JWT token from cookies
             jwt_token = request.COOKIES.get("jwt")
             print(f"JWT Token: {jwt_token}")
             if not jwt_token:
@@ -144,8 +148,21 @@ def save_data(request):
                 logger.warning("Invalid payload: 'staff_user' missing")
                 raise AuthenticationFailed("Invalid token payload.")
 
+            # Fetch staff details from staff collection
+            staff_details = staff_collection.find_one({"_id": ObjectId(staff_id)})
+            if not staff_details:
+                logger.error(f"Staff not found with ID: {staff_id}")
+                return JsonResponse({"error": "Staff not found"}, status=404)
+
             data = json.loads(request.body)
-            data["staffId"] = staff_id
+            # Add staff details to the data
+            data.update({
+                "staffId": staff_id,
+                "department": staff_details.get("department"),
+                "college": staff_details.get("collegename"),
+                "name": staff_details.get("full_name")
+            })
+
             contest_id = data.get("contestId")
             if not contest_id:
                 return JsonResponse({"error": "contestId is required"}, status=400)
@@ -153,9 +170,6 @@ def save_data(request):
             # Check if 'assessmentOverview' exists and contains the necessary fields
             if "assessmentOverview" not in data or "registrationStart" not in data["assessmentOverview"] or "registrationEnd" not in data["assessmentOverview"]:
                 return JsonResponse({"error": "'registrationStart' or 'registrationEnd' is missing in 'assessmentOverview'"}, status=400)
-
-            # Log the incoming data for debugging
-            # print("Incoming Data:", data)
 
             # Convert registrationStart and registrationEnd to datetime objects
             try:
@@ -165,8 +179,17 @@ def save_data(request):
                 return JsonResponse({"error": f"Invalid date format: {str(e)}"}, status=400)
 
             collection.insert_one(data)
-            return JsonResponse({"message": "Data saved successfully", "contestId": contest_id}, status=200)
+            return JsonResponse({
+                "message": "Data saved successfully", 
+                "contestId": contest_id,
+                "staffDetails": {
+                    "name": staff_details.get("full_name"),
+                    "department": staff_details.get("department"),
+                    "college": staff_details.get("collegename")
+                }
+            }, status=200)
         except Exception as e:
+            logger.error(f"Error saving data: {str(e)}")
             return JsonResponse({"error": str(e)}, status=500)
     return JsonResponse({"error": "Invalid request method"}, status=400)
 
@@ -239,40 +262,51 @@ def save_question(request):
             # Parse the request body
             data = json.loads(request.body)
             questions = data.get("questions", [])
+            
             if not questions:
                 return JsonResponse({"error": "No questions provided"}, status=400)
 
-            # Check if the contest_id already exists
+            # Check if the contest_id already exists and get the current question count
             assessment = assessment_questions_collection.find_one({"contestId": contest_id})
             if not assessment:
-                # If the contest does not exist, create it
+                # If the contest does not exist, create it with previousQuestionCount as 0
                 print(f"Creating new contest entry for contest_id: {contest_id}")
                 assessment_questions_collection.insert_one({
                     "contestId": contest_id,
-                    "questions": []
+                    "questions": [],
+                    "previousQuestionCount": 0  # Initial count is 0
                 })
-                assessment = {"contestId": contest_id, "questions": []}
+                previous_count = 0
+            else:
+                # Get the current number of questions
+                previous_count = len(assessment.get("questions", []))
 
-            # Append new questions to the contest
+            # Process new questions
             added_questions = []
+            
             for question in questions:
                 question_id = ObjectId()  # Generate a unique ObjectId for the question
                 question["_id"] = question_id  # Add the ID to the question
                 added_questions.append(question)
 
-            # Save new questions to MongoDB
-            assessment_questions_collection.update_one(
-                {"contestId": contest_id},
-                {"$push": {"questions": {"$each": added_questions}}}
-            )
+            # Save new questions to MongoDB and update previousQuestionCount
+            if added_questions:
+                assessment_questions_collection.update_one(
+                    {"contestId": contest_id},
+                    {
+                        "$push": {"questions": {"$each": added_questions}},
+                        "$set": {"previousQuestionCount": previous_count}  # Set previous count before adding new questions
+                    }
+                )
 
             # Convert ObjectId to string in the response
             for question in added_questions:
                 question["_id"] = str(question["_id"])
 
             return JsonResponse({
-                "message": "Questions saved successfully!",
-                "added_questions": added_questions  # Include questions with _id
+                "message": "Questions added successfully!",
+                "added_questions": added_questions,
+                "previousQuestionCount": previous_count  # Optional: include in response for verification
             }, status=200)
 
         except ValueError as e:
@@ -280,7 +314,6 @@ def save_question(request):
         except Exception as e:
             return JsonResponse({"error": f"An unexpected error occurred: {str(e)}"}, status=500)
     return JsonResponse({"error": "Invalid request method"}, status=405)
-
 
 
 @csrf_exempt
@@ -302,7 +335,6 @@ def get_questions(request):
             # Check if the contest exists in the database
             assessment = assessment_questions_collection.find_one({"contestId": contest_id})
             if not assessment:
-                # If no contest found, create a new entry with an empty questions list
                 print(f"Creating new contest entry for contest_id: {contest_id}")
                 assessment_questions_collection.insert_one({
                     "contestId": contest_id,
@@ -312,23 +344,38 @@ def get_questions(request):
 
             # Fetch the questions
             questions = assessment.get("questions", [])
+            previousQuestionCount = assessment.get("previousQuestionCount", 0)
 
-            # Remove duplicates: Only keep unique questions based on text + options
+            # Remove duplicates and count them
             unique_questions = []
             seen_questions = set()
+            duplicate_count = 0
 
             for question in questions:
                 question_key = f"{question['question']}-{'-'.join(question['options'])}"
                 if question_key not in seen_questions:
                     seen_questions.add(question_key)
                     unique_questions.append(question)
+                else:
+                    duplicate_count += 1
+
+            # Update the database with unique questions and the new previousQuestionCount
+            new_previous_question_count = len(unique_questions)
+            assessment_questions_collection.update_one(
+                {"contestId": contest_id},
+                {"$set": {"questions": unique_questions, "previousQuestionCount": new_previous_question_count}}
+            )
 
             # Convert `_id` to string for JSON response
             for question in unique_questions:
                 if "_id" in question:
-                    question["_id"] = str(question["_id"])  
+                    question["_id"] = str(question["_id"])
 
-            return JsonResponse({"questions": unique_questions}, status=200)
+            return JsonResponse({
+                "questions": unique_questions,
+                "duplicates_removed": duplicate_count,
+                "previousQuestionCount": previousQuestionCount,
+            }, status=200)
 
         except ValueError as e:
             print(f"Authorization error: {str(e)}")
@@ -764,6 +811,9 @@ def get_section_questions_for_contest(request, contest_id):
         return JsonResponse({"error": str(e)}, status=500)
 
 
+
+
+
 @csrf_exempt
 def submit_mcq_assessment(request):
     if request.method == "POST":
@@ -779,6 +829,8 @@ def submit_mcq_assessment(request):
             ispublish = data.get("ispublish", False)
             pass_percentage = data.get("passPercentage", 50)  # Default pass percentage
             student_id = data.get("studentId")
+            start_time = data.get("startTime")
+            finish_time = data.get("finishTime")
 
             # Validate required fields
             if not contest_id:
@@ -787,6 +839,23 @@ def submit_mcq_assessment(request):
                 return JsonResponse({"error": "Answers are required"}, status=400)
             if not student_id:
                 return JsonResponse({"error": "Student ID is required"}, status=400)
+
+            # Check if student has already completed this assessment
+            existing_report = mcq_report_collection.find_one({
+                "contest_id": contest_id,
+                "students": {
+                    "$elemMatch": {
+                        "student_id": student_id,
+                        "status": "Completed"
+                    }
+                }
+            })
+
+            if existing_report:
+                return JsonResponse({
+                    "error": "You have already submitted this assessment",
+                    "status": "Already_Submitted"
+                }, status=400)
 
             # Fetch assessment from the database
             assessment = collection.find_one({"contestId": contest_id})
@@ -848,11 +917,6 @@ def submit_mcq_assessment(request):
             # Calculate percentage and grade
             percentage = (correct_answers / total_questions) * 100 if total_questions > 0 else 0
             grade = "Pass" if percentage >= pass_percentage else "Fail"
-            print("This is the percentage",percentage)
-
-            # Record start and finish time
-            start_time = datetime.utcnow()
-            finish_time = datetime.utcnow()
 
             # Prepare student data
             student_data = {
@@ -882,21 +946,14 @@ def submit_mcq_assessment(request):
             else:
                 # Check if the student already exists in the students array
                 students = report.get("students", [])
-                for student in students:
+                student_found = False
+                for i, student in enumerate(students):
                     if student.get("student_id") == student_id:
-                        student["status"] = "Completed"
-                        student["grade"] = grade
-                        student["percentage"] = percentage
-                        student["attended_question"] = attended_questions
-                        student["FullscreenWarning"] = fullscreen_warning
-                        student["TabSwitchWarning"] = tabswitch_warning
-                        student["NoiseWarning"] = noise_warning
-                        student["FaceWarning"] = face_warning
-                        student["startTime"] = student.get("startTime", start_time)
-                        student["finishTime"] = finish_time
+                        students[i] = student_data  # Replace the existing student data
+                        student_found = True
                         break
-                else:
-                    # Add a new student entry if not found
+                
+                if not student_found:
                     students.append(student_data)
 
                 # Update the report with modified students array
@@ -924,6 +981,14 @@ def submit_mcq_assessment(request):
             return JsonResponse({"error": f"An error occurred: {str(e)}"}, status=500)
 
     return JsonResponse({"error": "Invalid request method"}, status=405)
+
+
+
+
+
+
+
+
 
 @csrf_exempt
 def get_correct_answer(request, contestId, regno):
@@ -1127,6 +1192,8 @@ model = genai.GenerativeModel('gemini-1.5-pro')
 api_key = "AIzaSyA1fzr8LD2ywsBvoIt3IFm1efjbhG9GkfM"  # Ensure this API key is secure
 genai.configure(api_key=api_key)
 
+import re  # Add this import at the top if not already present
+
 @csrf_exempt
 def generate_questions(request):
     if request.method == "POST":
@@ -1135,12 +1202,24 @@ def generate_questions(request):
             data = json.loads(request.body)
             topic = data.get("topic")
             subtopic = data.get("subtopic")
-            levels = data.get("level")
             num_questions_input = data.get("num_questions")
-
-            num_questions = int(num_questions_input)  # Convert the input to an integer
             question_type = "Multiple Choice"  # Force the question type to Multiple Choice
             level_distribution = data.get("level_distribution")
+            
+            # Input validation
+            if not topic or not subtopic:
+                return JsonResponse({"error": "Topic and subtopic are required."}, status=400)
+                
+            if not num_questions_input:
+                return JsonResponse({"error": "Number of questions is required."}, status=400)
+                
+            if not level_distribution or not isinstance(level_distribution, list) or len(level_distribution) == 0:
+                return JsonResponse({"error": "Level distribution is required."}, status=400)
+            
+            try:
+                num_questions = int(num_questions_input)  # Convert the input to an integer
+            except ValueError:
+                return JsonResponse({"error": "Number of questions must be a valid integer."}, status=400)
             
             questions_data = []
                 
@@ -1155,27 +1234,46 @@ def generate_questions(request):
             }
 
             # Validate total questions against level distribution
-            total_count = sum(level_data['count'] for level_data in level_distribution)
-            if total_count != num_questions:
-                return JsonResponse({"error": f"Total questions in level distribution must equal {num_questions}."}, status=400)
+            try:
+                total_count = sum(int(level_data.get('count', 0)) for level_data in level_distribution)
+                if total_count != num_questions:
+                    return JsonResponse({"error": f"Total questions in level distribution ({total_count}) must equal {num_questions}."}, status=400)
+            except (TypeError, ValueError):
+                return JsonResponse({"error": "Invalid count values in level distribution."}, status=400)
 
+            # Process each level
             for level_data in level_distribution:
-                level = level_data['level']
-                count = level_data['count']
+                level = level_data.get('level')
+                count = int(level_data.get('count', 0))
+                
+                if count <= 0:
+                    continue  # Skip if count is zero or negative
+                
+                if not level:
+                    return JsonResponse({"error": "Level name is required for each distribution entry."}, status=400)
+                
+                # Get the corresponding short form level
+                short_level = level_mapping.get(level, "Unknown")
 
-                # Define the prompt for Multiple Choice Questions
+                # Define the prompt for Multiple Choice Questions with very explicit formatting instructions
                 prompt = (
-                    f"Generate {count} Multiple Choice questions "
-                    f"on the topic '{topic}' with subtopic '{subtopic}' "
-                    f"for the Bloom's Taxonomy level: {level}. "
-                    f"Return the questions in the following format without any additional explanation or information:\n\n"
-                    f"Question: <The generated question>\n"
-                    f"Options: <A list of options separated by semicolons>\n"
-                    f"Answer: <The correct answer>\n"
-                    f"Negative Marking: <Negative marking value>\n"
-                    f"Mark: <Mark value>\n"
-                    f"Level: <Blooms level>\n"
-                    f"Tags: <Tags separated by commas>"
+                    f"Generate {count} Multiple Choice questions on the topic '{topic}' with subtopic '{subtopic}' "
+                    f"for the Bloom's Taxonomy level: {level}.\n\n"
+                    f"IMPORTANT FORMATTING RULES:\n"
+                    f"1. Each question MUST have EXACTLY 4 options (no more, no less)\n"
+                    f"2. Each question must be formatted EXACTLY like this example:\n"
+                    f"Question: What is the capital of France?\n"
+                    f"Options: Paris;London;Berlin;Madrid\n"
+                    f"Answer: Paris\n"
+                    f"Negative Marking: 0\n"
+                    f"Mark: 1\n"
+                    f"Level: {level}\n"
+                    f"Tags: Geography,Europe,Capitals\n\n"
+                    f"3. Do not include A), B), C), D) or any numbering in the options\n"
+                    f"4. Separate the options with semicolons only\n"
+                    f"5. The correct answer MUST be exactly identical to one of the options\n"
+                    f"6. Separate different questions with a blank line\n"
+                    f"7. Do not include any explanation or additional text"
                 )
 
                 try:
@@ -1189,47 +1287,117 @@ def generate_questions(request):
                     if not question_text.strip():
                         return JsonResponse({"error": "No questions generated. Please try again."}, status=500)
 
-                    questions_list = question_text.strip().split("\n\n")  # Split questions by newlines
-
-                    # Collect questions and answers to send as JSON
+                    # Split questions by double newline
+                    questions_list = re.split(r'\n\s*\n', question_text.strip())
+                    
+                    # Process each question
                     for question in questions_list:
-                        lines = question.split("\n")
-                        question_text = lines[0].strip().replace("Question:", "").strip()
-                        options_text = lines[1].replace("Options: ", "").strip()
-                        options = [opt.strip() for opt in options_text.split(";")]  # Split options by semicolons and strip whitespace
-                        answer_text = lines[2].replace("Answer: ", "").strip()
-                        negative_marking = lines[3].replace("Negative Marking: ", "").strip()
-                        mark = lines[4].replace("Mark: ", "").strip()
-                        level = lines[5].replace("Level: ", "").strip()
-                        # Map the full level name to its short form
-                        short_level = level_mapping.get(level, "Unknown")  
-                        tags = lines[6].replace("Tags: ", "").strip().split(",")  # Split tags by commas
-                        questions_data.append({
-                            "topic": topic,
-                            "subtopic": subtopic,
-                            "level": short_level,
-                            "question_type": question_type,
-                            "question": question_text,
-                            "options": options,
-                            "correctAnswer": answer_text,
-                            "negativeMarking": negative_marking,
-                            "mark": mark,
-                            "tags": tags
-                        })
-                        
+                        try:
+                            # Split the question into lines
+                            lines = question.strip().split('\n')
+                            
+                            # Check if we have enough lines for a complete question
+                            if len(lines) < 6:
+                                print(f"Skipping incomplete question: {question}")
+                                continue
+                            
+                            # Process question text
+                            question_line = lines[0]
+                            question_text = question_line.replace("Question:", "", 1).strip() if question_line.startswith("Question:") else question_line
+                            
+                            # Process options
+                            options_line = lines[1]
+                            options_text = options_line.replace("Options:", "", 1).strip() if options_line.startswith("Options:") else options_line
+                            options = [opt.strip() for opt in options_text.split(";")]
+                            
+                            # Ensure we have exactly 4 options
+                            if len(options) > 4:
+                                options = options[:4]
+                            elif len(options) < 4:
+                                # If less than 4 options, add dummy options to make it 4
+                                while len(options) < 4:
+                                    options.append(f"Option {len(options) + 1}")
+                            
+                            # Process answer
+                            answer_line = lines[2]
+                            answer = answer_line.replace("Answer:", "", 1).strip() if answer_line.startswith("Answer:") else answer_line
+                            
+                            # Ensure the answer is one of the options
+                            if answer not in options:
+                                # Try to find a matching option
+                                answer_match = False
+                                for i, opt in enumerate(options):
+                                    if answer.lower() in opt.lower() or opt.lower() in answer.lower():
+                                        answer = opt  # Use the exact text from the option
+                                        answer_match = True
+                                        break
+                                
+                                if not answer_match:
+                                    # If no match, use the first option as the answer
+                                    answer = options[0]
+                            
+                            # Process negative marking
+                            neg_mark_line = lines[3]
+                            neg_mark = neg_mark_line.replace("Negative Marking:", "", 1).strip() if neg_mark_line.startswith("Negative Marking:") else neg_mark_line
+                            
+                            # Process mark value
+                            mark_line = lines[4]
+                            mark = mark_line.replace("Mark:", "", 1).strip() if mark_line.startswith("Mark:") else mark_line
+                            
+                            # Process level - IMPORTANT: Use the requested level, not what AI returns
+                            # This ensures consistency between what was requested and what's stored                            
+                            
+                            # Process tags if available
+                            tags = []
+                            if len(lines) > 6:
+                                tags_line = lines[6]
+                                tags_text = tags_line.replace("Tags:", "", 1).strip() if tags_line.startswith("Tags:") else tags_line
+                                tags = [tag.strip() for tag in tags_text.split(",")]
+                            
+                            # Add the question to our collected data
+                            # IMPORTANT: Use short_level from the request, not what AI generates
+                            questions_data.append({
+                                "topic": topic,
+                                "subtopic": subtopic,
+                                "level": short_level,  # Use the short level code directly
+                                "question_type": question_type,
+                                "question": question_text,
+                                "options": options,
+                                "correctAnswer": answer,
+                                "negativeMarking": neg_mark,
+                                "mark": mark,
+                                "tags": tags
+                            })
+                            
+                            print(f"Successfully processed question: {question_text[:30]}... with level {short_level}")
+                            
+                        except Exception as e:
+                            print(f"Error processing question: {str(e)}\nQuestion text: {question[:100]}...")
+                            # Continue to next question instead of failing the whole batch
+                            continue
+                    
                 except Exception as e:
-                    return JsonResponse({"error": f"Error generating questions: {str(e)}"}, status=500)
-                        
-            # Return a JSON response with the generated questions
+                    return JsonResponse({"error": f"Error generating questions for level {level}: {str(e)}"}, status=500)
+            
+            # Check if we generated any questions
+            if not questions_data:
+                return JsonResponse({"error": "No valid questions were generated. Please try a different topic or level."}, status=500)
+            
+            # Log some stats
+            print(f"Successfully generated {len(questions_data)} questions across {len(level_distribution)} levels")
+            
+            # Return the generated questions
             return JsonResponse({
                 "success": "Questions generated successfully",
                 "questions": questions_data
             })
 
         except Exception as e:
+            print(f"Top-level error in generate_questions: {str(e)}")
             return JsonResponse({"error": f"Error generating questions: {str(e)}"}, status=500)
 
     return JsonResponse({"error": "Invalid request method."}, status=405)
+
 
 @csrf_exempt
 def save_assessment_questions(request):
@@ -1351,22 +1519,21 @@ def reassign(request, contest_id, student_id):
 def close_session(request, contest_id):
     if request.method == "POST":
         try:
-            # Find the document with the given contest ID and update it
             result = collection.update_one(
-                {"contestId": contest_id},  # Find document with this contestId
-                {"$set": {"Overall_Status": "closed"}}  # Set session to "closed"
+                {"contestId": contest_id},  
+                {"$set": {"Overall_Status": "closed"}}
             )
 
-            if result.matched_count > 0:  # Check if any document was updated
+            if result.modified_count > 0:  # Use modified_count instead of matched_count
                 return JsonResponse({"message": "Session closed successfully."}, status=200)
             else:
-                return JsonResponse({"message": "Contest ID not found."}, status=404)
+                return JsonResponse({"message": "Contest ID not found or already closed."}, status=404)
 
         except Exception as e:
-            print(f"Error while updating MongoDB: {e}")
-            return JsonResponse({"message": "Internal server error."}, status=500)
+            return JsonResponse({"message": f"Internal server error: {str(e)}"}, status=500)
 
     return JsonResponse({"message": "Invalid request method."}, status=405)
+
 
 certificate_collection = db['certificate']
 
@@ -1423,5 +1590,139 @@ def verify_certificate(request, unique_id=None):
                 return JsonResponse({'status': 'error', 'message': 'Certificate not found.'})
         except Exception as e:
             return JsonResponse({'status': 'error', 'message': str(e)})
+
+    return JsonResponse({'status': 'error', 'message': 'Invalid request method.'})
+
+
+@api_view(['PUT'])
+@permission_classes([AllowAny])
+def update_assessment(request, contest_id):
+    """
+    Endpoint to update an existing assessment.
+    """
+    try:
+        # 1. Extract and decode the JWT token from cookies
+        jwt_token = request.COOKIES.get("jwt")
+        print(f"JWT Token: {jwt_token}")
+        if not jwt_token:
+            logger.warning("JWT Token missing in cookies")
+            raise AuthenticationFailed("Authentication credentials were not provided.")
+
+        try:
+            decoded_token = jwt.decode(jwt_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+            logger.info("Decoded JWT Token: %s", decoded_token)
+        except jwt.ExpiredSignatureError:
+            logger.error("Expired JWT Token")
+            raise AuthenticationFailed("Access token has expired. Please log in again.")
+        except jwt.InvalidTokenError:
+            logger.error("Invalid JWT Token")
+            raise AuthenticationFailed("Invalid token. Please log in again.")
+
+        staff_id = decoded_token.get("staff_user")
+        if not staff_id:
+            logger.warning("Invalid payload: 'staff_user' missing")
+            raise AuthenticationFailed("Invalid token payload.")
+
+        # 2. Validate staff existence in MongoDB
+        try:
+            staff = staff_collection.find_one({"_id": ObjectId(staff_id)})
+        except errors.InvalidId:
+            logger.error("Invalid staff_id format in token")
+            raise AuthenticationFailed("Invalid token payload.")
+
+        if not staff:
+            logger.error("Staff not found with ID: %s", staff_id)
+            return JsonResponse({"error": "Staff not found"}, status=404)
+
+        # 3. Retrieve the assessment from MongoDB
+        assessment = assessment_questions_collection.find_one({"contestId": contest_id})
+        if not assessment:
+            logger.warning("Assessment not found with contestId: %s", contest_id)
+            return JsonResponse({"error": "Assessment not found"}, status=404)
+
+        # 4. Parse the request data
+        data = request.data
+        logger.info(f"Update Payload: {data}")
+
+        assessment_overview = data.get("assessmentOverview", {})
+        test_configuration = data.get("testConfiguration", {})
+
+        # 5. Validate date format
+        try:
+            registration_start = str_to_datetime(assessment_overview.get("registrationStart"))
+            registration_end = str_to_datetime(assessment_overview.get("registrationEnd"))
+        except ValueError as e:
+            logger.error("Invalid date format for registrationStart or registrationEnd: %s", str(e))
+            return JsonResponse({"error": "Invalid date format. Use ISO format for dates."}, status=400)
+
+        # 6. Update the assessment document
+        updated_fields = {
+            "assessmentOverview": {
+                "name": assessment_overview.get("name", assessment["assessmentOverview"]["name"]),
+                "description": assessment_overview.get("description", assessment["assessmentOverview"]["description"]),
+                "registrationStart": registration_start if registration_start else assessment["assessmentOverview"]["registrationStart"],
+                "registrationEnd": registration_end if registration_end else assessment["assessmentOverview"]["registrationEnd"],
+                "guidelines": assessment_overview.get("guidelines", assessment["assessmentOverview"]["guidelines"]),
+                "sectionDetails": assessment_overview.get("sectionDetails", assessment["assessmentOverview"].get("sectionDetails", "No")),
+                "timingType": assessment_overview.get("timingType", assessment["assessmentOverview"]["timingType"]),
+            },
+            "testConfiguration": {
+                "questions": test_configuration.get("questions", assessment["testConfiguration"]["questions"]),
+                "totalMarks": test_configuration.get("totalMarks", assessment["testConfiguration"]["totalMarks"]),  # Include totalMarks
+                "duration": test_configuration.get("duration", assessment["testConfiguration"]["duration"]),
+                "fullScreenMode": test_configuration.get("fullScreenMode", assessment["testConfiguration"]["fullScreenMode"]),
+                "faceDetection": test_configuration.get("faceDetection", assessment["testConfiguration"]["faceDetection"]),
+                "deviceRestriction": test_configuration.get("deviceRestriction", assessment["testConfiguration"]["deviceRestriction"]),
+                "noiseDetection": test_configuration.get("noiseDetection", assessment["testConfiguration"]["noiseDetection"]),
+                "passPercentage": test_configuration.get("passPercentage", assessment["testConfiguration"]["passPercentage"]),
+                "resultVisibility": test_configuration.get("resultVisibility", assessment["testConfiguration"]["resultVisibility"]),
+                "fullScreenModeCount": test_configuration.get("fullScreenModeCount", assessment["testConfiguration"].get("fullScreenModeCount", 0)),  # Include fullScreenModeCount
+                "faceDetectionCount": test_configuration.get("faceDetectionCount", assessment["testConfiguration"].get("faceDetectionCount", 0)),  # Include faceDetectionCount
+                "noiseDetectionCount": test_configuration.get("noiseDetectionCount", assessment["testConfiguration"].get("noiseDetectionCount", 0)),  # Include noiseDetectionCount
+                "shuffleQuestions": test_configuration.get("shuffleQuestions", assessment["testConfiguration"].get("shuffleQuestions", False)),  # Include shuffleQuestions
+                "shuffleOptions": test_configuration.get("shuffleOptions", assessment["testConfiguration"].get("shuffleOptions", False)),  # Include shuffleOptions
+            },
+            "updatedAt": datetime.utcnow(),
+        }
+
+        # 7. Update the document in MongoDB
+        result = assessment_questions_collection.update_one(
+            {"contestId": contest_id},
+            {"$set": updated_fields}
+        )
+
+        if result.modified_count == 0:
+            logger.warning("No assessment modified with contestId: %s", contest_id)
+            return JsonResponse({"message": "No changes were applied"}, status=200)
+
+        logger.info("Assessment document updated: %s", contest_id)
+
+        # 8. Return success response
+        return JsonResponse({"message": "Assessment updated successfully!"}, status=200)
+
+    except AuthenticationFailed as auth_error:
+        logger.warning("Authentication failed: %s", str(auth_error))
+        return JsonResponse({"error": str(auth_error)}, status=401)
+    except Exception as e:
+        logger.exception("Unexpected error occurred")
+        return JsonResponse({"error": str(e)}, status=500)  # Include the actual error message for debugging
+
+    
+from datetime import datetime
+def str_to_datetime(date_str):
+    if not date_str or date_str == 'T':
+        # If the date string is empty or just contains 'T', return None or raise an error
+        raise ValueError(f"Invalid datetime format: {date_str}")
+
+    try:
+        # Try parsing the full datetime format (with seconds)
+        return datetime.strptime(date_str, '%Y-%m-%dT%H:%M:%S')
+    except ValueError:
+        try:
+            # If there's no seconds, try parsing without seconds
+            return datetime.strptime(date_str, '%Y-%m-%dT%H:%M')
+        except ValueError:
+            # If both parsing methods fail, raise an error
+            raise ValueError(f"Invalid datetime format: {date_str}")# Create Assessment (POST method)
 
     return JsonResponse({'status': 'error', 'message': 'Invalid request method.'})

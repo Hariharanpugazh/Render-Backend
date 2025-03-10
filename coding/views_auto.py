@@ -6,6 +6,7 @@ from pymongo import MongoClient
 import os
 from bson.objectid import ObjectId
 from student.utils import *
+from pymongo.errors import PyMongoError
 # Update the MongoClient to use the provided connection string
 client = MongoClient("mongodb+srv://krish:krish@assessment.ar5zh.mongodb.net/")
 db = client["test_portal_db"]  # Ensure this matches the database name in your connection string

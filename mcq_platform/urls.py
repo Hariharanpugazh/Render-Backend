@@ -45,9 +45,8 @@ urlpatterns = [
     path("delete-question/<str:question_id>/", delete_question, name="delete_question"),
     path('sections/<str:contest_id>/', get_section_questions_for_contest, name='get_section_questions_for_contest'),
     path('store-certificate/', store_certificate, name='store_certificate'),
-
+    path("update-assessment/<str:contest_id>/", update_assessment, name="update_assessment"),
     path("reassign/<str:contest_id>/<str:student_id>/", reassign, name="reassign"),
-
     path('verify-certificate/<str:unique_id>/', verify_certificate, name='verify_certificate'),
     path('get_cert_date/', get_test_date, name='get_date'),
 

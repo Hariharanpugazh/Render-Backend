@@ -1,0 +1,21 @@
+# Use the latest Python 3.12 image
+FROM python:3.12
+
+# Set the working directory inside the container
+WORKDIR /app
+
+# Copy all backend files
+COPY . .
+
+# Install dependencies
+RUN pip install --upgrade pip
+RUN pip install -r requirements.txt
+
+# Run database migrations
+RUN python manage.py migrate
+
+# Expose Django's default port
+EXPOSE 8000
+
+# Start Django server
+CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]

@@ -13,15 +13,16 @@ from .Mcq_question import (
     delete_test, fetch_all_tests, bulk_upload_test, delete_question_from_test, fetch_questions_for_test, bulk_upload_questions_to_test,
     append_question_to_test,edit_question_in_test, 
 )
-from .views import fetch_contests, fetch_mcq_assessments, remove_student_visibility, mcq_draft_data, delete_drafts
-from .views import fetch_student_stats
+from .views import *
 
 urlpatterns = [
     # Authentication
     path("login/", staff_login, name="staff_login"),
+    path("staff_logout/",staff_logout,name='staff_logout'),
     path("signup/", staff_signup, name="staff_signup"),
     path("forgot-password/", forgot_password, name="forgot_password"),
     path("reset-password/", reset_password, name="reset_password"),
+    path("verify-token/", verify_token, name='verify_token'),
     path('api/create-assessment/', assessment.create_assessment, name='create_assessment'),
     path('studentprofile/', studentsprofile.student_profile, name='student_profile'),
     path('studentstats/<str:regno>/', studentstats, name='studentstats'),
@@ -45,7 +46,7 @@ urlpatterns = [
     path("api/update_question/<str:question_id>/", update_question, name="update_question"),
     path("api/delete_question/<str:question_id>/", delete_question, name="delete_question"),
     path('mcq_stats/<str:regno>/', mcq_student_results, name='mcq_student_results'),
-
+    # path('api/update-assessment/<str:contest_id>/', assessment.update_assessment, name='update_assessment'),
     # ViewTest on admin
     path('students/stats', fetch_student_stats, name='student_stats'),
     path('api/contests/<str:contestId>/', view_test_details, name='view_test_details'),

@@ -15,4 +15,5 @@ urlpatterns = [
     path("mcq-reports/", get_mcq_reports_for_student, name='get_mcq_reports_for_student'),
     path("check-publish-status/", check_publish_status, name="check_publish_status"),
     path('student_section_details/<str:contest_id>/', student_section_details, name='student_section_details'),
+    path('bulk-signup/', bulk_student_signup, name='bulk_student_signup'),
 ]

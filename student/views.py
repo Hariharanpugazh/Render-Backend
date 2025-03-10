@@ -16,7 +16,9 @@ from rest_framework import status
 from datetime import datetime, timedelta
 import jwt
 logger = logging.getLogger(__name__)
-
+import pandas as pd
+from io import BytesIO
+import openpyxl
 
 
 # Secret and algorithm for signing the tokens
@@ -157,6 +159,145 @@ def student_signup(request):
         logger.error(f"Error during student signup: {e}")
         return Response(
             {"error": "Something went wrong. Please try again later."}, status=500
+        )
+    
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])  # Allow signup without authentication
+def bulk_student_signup(request):
+    """
+    Bulk signup for students using XLSX or CSV file
+    """
+    try:
+        # Check if file is in request
+        if 'file' not in request.FILES:
+            return Response({"error": "No file provided. Please select a file to upload."}, status=400)
+
+        file = request.FILES['file']
+        file_extension = file.name.split('.')[-1].lower()
+
+        # Process file based on extension
+        if file_extension == 'csv':
+            try:
+                # Read CSV file
+                df = pd.read_csv(file)
+            except Exception as e:
+                return Response({"error": f"Invalid CSV file: {str(e)}"}, status=400)
+        elif file_extension in ['xlsx', 'xls']:
+            try:
+                # Read Excel file
+                df = pd.read_excel(file)
+            except Exception as e:
+                return Response({"error": f"Invalid Excel file: {str(e)}"}, status=400)
+        else:
+            return Response({"error": f"Unsupported file format: .{file_extension}. Please upload a CSV or XLSX file."}, status=400)
+
+        # Convert registration number column to string
+        if 'regno' in df.columns:
+            df['regno'] = df['regno'].astype(str)
+
+        # Validate dataframe columns
+        required_columns = ["name", "email", "password", "dept", "collegename", "regno", "year"]
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        
+        if missing_columns:
+            return Response(
+                {"error": f"Missing columns in the file: {', '.join(missing_columns)}. Please ensure your file has all required fields."},
+                status=400
+            )
+            
+        # Check if file is empty
+        if len(df) == 0:
+            return Response({"error": "The uploaded file contains no data."}, status=400)
+
+        # Process each row
+        success_count = 0
+        errors = []
+        valid_years = ["I", "II", "III", "IV"]
+
+        for index, row in df.iterrows():
+            try:
+                # Skip rows with missing required values
+                missing_fields = [field for field in required_columns if pd.isnull(row[field])]
+                if missing_fields:
+                    errors.append({
+                        "row": index + 2,  # +2 because index is 0-based and headers are row 1
+                        "error": f"Missing required fields: {', '.join(missing_fields)}"
+                    })
+                    continue
+                
+                # Check year validity
+                if row['year'] not in valid_years:
+                    errors.append({
+                        "row": index + 2,
+                        "error": f"Invalid year for {row['regno']}. Must be one of I, II, III, IV."
+                    })
+                    continue
+                
+                # Check if email already exists
+                if student_collection.find_one({"email": row['email']}):
+                    errors.append({
+                        "row": index + 2,
+                        "error": f"Email already exists: {row['email']}"
+                    })
+                    continue
+                
+                # Check if regno already exists - ensure it's compared as string
+                if student_collection.find_one({"regno": str(row['regno'])}):
+                    errors.append({
+                        "row": index + 2,
+                        "error": f"Registration number already exists: {row['regno']}"
+                    })
+                    continue
+                
+                # Create student record - explicitly convert regno to string
+                student_user = {
+                    "name": row['name'],
+                    "email": row['email'],
+                    "password": make_password(row['password']),
+                    "collegename": row['collegename'],
+                    "dept": row['dept'],
+                    "regno": str(row['regno']),  # Ensure regno is stored as string
+                    "year": row['year'],
+                    "created_at": datetime.now(),
+                    "updated_at": datetime.now(),
+                }
+                
+                # Insert to database
+                student_collection.insert_one(student_user)
+                success_count += 1
+                
+            except Exception as e:
+                errors.append({
+                    "row": index + 2,
+                    "error": f"Error processing row: {str(e)}"
+                })
+        
+        # Generate response
+        response_data = {
+            "success_count": success_count,
+            "error_count": len(errors),
+            "errors": errors if errors else None
+        }
+        
+        if success_count > 0:
+            return Response(response_data, status=201)
+        else:
+            return Response(response_data, status=400)
+
+    except pd.errors.ParserError as e:
+        logger.error(f"Error parsing file: {e}")
+        return Response(
+            {"error": f"Error parsing file: {str(e)}. Please check the file format."}, 
+            status=400
+        )
+    except Exception as e:
+        logger.error(f"Error during bulk student signup: {e}")
+        # Return the specific error in the response
+        return Response(
+            {"error": f"Error processing file: {str(e)}"}, 
+            status=500
         )
 
 
@@ -543,14 +684,15 @@ def check_publish_status(request):
 
     except Exception as e:
         return JsonResponse({"error": f"Failed to check publish status: {str(e)}"}, status=500)
-    
+client = MongoClient('mongodb+srv://krish:krish@assessment.ar5zh.mongodb.net/')   
+db = client['test_portal_db']    
 @csrf_exempt
 def student_section_details(request, contest_id):
     if request.method == "GET":
         # Fetch contest details by contestId
         contest = mcq_assessments_collection.find_one(
             {"contestId": contest_id},
-            {"sections": 1, "assessmentOverview.guidelines": 1, "_id": 0}
+            {"sections": 1, "assessmentOverview.guidelines": 1, "staffId": 1, "_id": 0}
         )
 
         if not contest:
@@ -559,23 +701,86 @@ def student_section_details(request, contest_id):
         sections = contest.get("sections", [])
         guidelines = contest.get("assessmentOverview", {}).get("guidelines", "")
 
-        # Calculate total duration
-        total_duration = sum(section.get("sectionDuration", 0) for section in sections)
+        # Calculate total duration properly handling both integer and dictionary durations
+        total_duration = 0
+        for section in sections:
+            section_duration = section.get("sectionDuration", 0)
+            if isinstance(section_duration, dict):
+                # If duration is a dict with hours and minutes, convert to total minutes
+                hours = section_duration.get("hours", 0)
+                minutes = section_duration.get("minutes", 0)
+                if isinstance(hours, str):
+                    hours = int(hours) if hours.isdigit() else 0
+                if isinstance(minutes, str):
+                    minutes = int(minutes) if minutes.isdigit() else 0
+                # Add to total (in minutes)
+                total_duration += (hours * 60) + minutes
+            elif isinstance(section_duration, (int, float)):
+                # If duration is already a number, add it directly
+                total_duration += section_duration
+            elif isinstance(section_duration, str) and section_duration.isdigit():
+                # Handle string representations of numbers
+                total_duration += int(section_duration)
 
         # Format the response with section name, number of questions, and duration
-        section_data = [
-            {
+        section_data = []
+        for section in sections:
+            section_duration = section.get("sectionDuration", 0)
+            # Format duration consistently as a dictionary with hours and minutes
+            if isinstance(section_duration, dict):
+                formatted_duration = section_duration
+            elif isinstance(section_duration, (int, float)) or (isinstance(section_duration, str) and section_duration.isdigit()):
+                # Convert numeric duration to hours and minutes dictionary
+                duration_value = int(section_duration) if isinstance(section_duration, str) else section_duration
+                formatted_duration = {
+                    "hours": duration_value // 60,
+                    "minutes": duration_value % 60
+                }
+            else:
+                formatted_duration = {"hours": 0, "minutes": 0}
+            
+            section_data.append({
                 "name": section["sectionName"],
                 "numQuestions": section["numQuestions"],
-                "duration": section.get("sectionDuration", 0),
-            }
-            for section in sections
-        ]
+                "duration": formatted_duration,
+            })
 
-        return JsonResponse({
+        # Format total duration as hours and minutes
+        formatted_total_duration = {
+            "hours": total_duration // 60,
+            "minutes": total_duration % 60
+        }
+
+        # Prepare the base response
+        response_data = {
             "sections": section_data,
             "guidelines": guidelines,
-            "totalDuration": total_duration  # Include total duration in response
-        }, status=200)
+            "totalDuration": formatted_total_duration  # Include formatted total duration
+        }
+        
+        # Fetch staff details using staffId
+        staff_id = contest.get('staffId')
+        if staff_id:
+            try:
+                staff_collection = db['staff']
+                staff_details = staff_collection.find_one(
+                    {"_id": ObjectId(staff_id)},
+                    {"full_name": 1, "email": 1, "phone_no": 1, "_id": 0}
+                )
+                
+                if staff_details:
+                    # Convert phone_no from NumberLong to string if needed
+                    if 'phone_no' in staff_details and isinstance(staff_details['phone_no'], dict):
+                        if '$numberLong' in staff_details['phone_no']:
+                            staff_details['phone_no'] = staff_details['phone_no']['$numberLong']
+                    
+                    # Add staff details to the response
+                    response_data['staff_details'] = staff_details
+            except Exception as e:
+                # Log the error but don't fail the whole request
+                print(f"Error fetching staff details: {str(e)}")
+                response_data['staff_details'] = {"error": f"Failed to fetch staff details: {str(e)}"}
+
+        return JsonResponse(response_data, status=200)
 
     return JsonResponse({"error": "Invalid request method"}, status=400)

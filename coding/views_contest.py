@@ -405,7 +405,8 @@ def start_mcqtest(request):
                             "student_id": student_id,
                             "status": "started",
                             "startTime": datetime.utcnow(),
-                            "ispublish": False
+                            "ispublish": False,
+                            "count": 1
                         }
                     ],
                 })
@@ -420,6 +421,13 @@ def start_mcqtest(request):
                         student["status"] = "started"
                         student["startTime"] = datetime.utcnow()
                         student_found = True
+
+                        # Check if the count is 3 or more and update status to "complete"
+                        if student.get("count", 0) >= 2:
+                            student["status"] = "LimitCompleted"
+
+                        # Increment the count
+                        student["count"] = student.get("count", 0) + 1
                         break
 
                 if not student_found:
@@ -428,6 +436,7 @@ def start_mcqtest(request):
                         "student_id": student_id,
                         "status": "started",
                         "startTime": datetime.utcnow(),
+                        "count": 1
                     })
 
                 # Update the report

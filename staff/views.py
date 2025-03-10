@@ -97,6 +97,7 @@ def staff_login(request):
             "email": staff_user.get("email"),
             "department": staff_user.get("department"),
             "collegename": staff_user.get("collegename"),
+            "role": staff_user.get("role"),  # Added role to the response
         }, status=200)
 
         # Set secure cookie for JWT
@@ -120,6 +121,36 @@ def staff_login(request):
             {"error": "Something went wrong. Please try again later."},
             status=500
         )
+
+
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def staff_logout(request):
+    try:
+        # Create a response object to delete the cookie
+        response = Response({"message": "Logout successful"}, status=200)
+
+        # Delete the JWT cookie by setting its expiration date to a past date
+        response.delete_cookie(
+            key='jwt',
+            path="/",
+            domain=None  # Ensure this matches the domain used when setting the cookie
+        )
+
+        return response
+
+    except Exception as e:
+        logger.error(f"Error during staff logout: {str(e)}")
+        return Response(
+            {"error": "Something went wrong. Please try again later."},
+            status=500
+        )
+
+
 
 #forgot password
 def generate_reset_token():
@@ -189,6 +220,28 @@ def reset_password(request):
 
     except Exception as e:
         return Response({"error": str(e)}, status=500)
+    
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def verify_token(request):
+    try:
+        email = request.data.get('email')
+        token = request.data.get('token')
+
+        # Find the user by email
+        user = staff_collection.find_one({"email": email})
+        if not user or user.get('password_reset_token') != token:
+            return Response({"error": "Invalid token"}, status=400)
+
+        # Check if token is expired
+        if datetime.utcnow() > user.get('password_reset_expires'):
+            return Response({"error": "Token has expired"}, status=400)
+
+        return Response({"message": "Token is valid"}, status=200)
+    
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
+
 
 @api_view(["POST"])
 @permission_classes([AllowAny])  # Allow signup without authentication
@@ -203,14 +256,16 @@ def staff_signup(request):
             "email": data.get("email"),
             "password": make_password(data.get("password")),
             "full_name": data.get("name"),
+            "role": data.get("role"),
             "department": data.get("department"),
+            "phone_no": data.get("phoneno"),
             "collegename": data.get("collegename"),
             "created_at": datetime.now(),
             "updated_at": datetime.now(),
         }
 
         # Validate required fields
-        required_fields = ["email", "password", "name", "department", "collegename"]
+        required_fields = ["email", "password", "name", "department", "role", "collegename", "phoneno"]
         missing_fields = [field for field in required_fields if not data.get(field)]
         if missing_fields:
             return Response(
@@ -316,16 +371,30 @@ def view_test_details(request, contestId):
                     # Add student details to the response
                     document['student_details'] = student_details
 
+                # Fetch staff details using staffId
+                staff_id = document.get('staffId')
+                if staff_id:
+                    staff_collection = db['staff']
+                    staff_details = staff_collection.find_one(
+                        {"_id": ObjectId(staff_id)},
+                        {"full_name": 1, "email": 1, "phone_no": 1, "_id": 0}
+                    )
+                    if staff_details:
+                        document['staff_details'] = staff_details
+                    else:
+                        document['staff_details'] = {"error": "Staff not found"}
+                else:
+                    document['staff_details'] = {"error": "No staffId provided"}
+
                 # Serialize the document before returning
                 return JsonResponse(serialize_object(document), safe=False)
             else:
                 return JsonResponse({"error": "Test not found"}, status=404)
 
-
         elif request.method == "PUT":
             try:
                 update_data = json.loads(request.body)
-                
+
                 # Extract date fields and convert them
                 reg_date = update_data['assessmentOverview'].get('registrationStart')
                 end_date = update_data['assessmentOverview'].get('registrationEnd')
@@ -344,7 +413,7 @@ def view_test_details(request, contestId):
                             return datetime.strptime(date_str, '%Y-%m-%dT%H:%M:%S')  # Without microseconds
                         except ValueError:
                             return datetime.strptime(date_str, '%Y-%m-%dT%H:%M')  # Without seconds
-                
+
                 # Update the fields in the `update_data` dict
                 if reg_date:
                     update_data['assessmentOverview']['registrationStart'] = convert_date(reg_date)
@@ -601,21 +670,22 @@ def get_completed_count(contest_id):
         completed_count += sum(1 for student in report.get("students", []) if student.get("status", "").lower() == "completed")
     return completed_count
 
+
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def fetch_mcq_assessments(request):
     """
-    Fetch MCQ assessments based on staff privileges:
-    - Admin users (admin="true") can see all assessments
-    - Regular staff users can only see their own assessments
+    Fetch MCQ assessments based on staff role:
+    - Staff: Can only see their own assessments
+    - HOD: Can see assessments created for their department
+    - Principal: Can see assessments for their entire college
+    - SuperAdmin: Can see all assessments
     """
     try:
-        # Fetch JWT token
         jwt_token = request.COOKIES.get("jwt")
         if not jwt_token:
             raise AuthenticationFailed("Authentication credentials were not provided.")
 
-        # Decode JWT token
         try:
             decoded_token = jwt.decode(jwt_token, 'test', algorithms=["HS256"])
         except jwt.ExpiredSignatureError:
@@ -627,23 +697,34 @@ def fetch_mcq_assessments(request):
         if not staff_id:
             raise AuthenticationFailed("Invalid token payload.")
 
-        # Check if staff is admin
         staff_collection = db['staff']
-        staff_user = staff_collection.find_one({"_id": ObjectId(staff_id)}, {"admin": 1})
+        staff_user = staff_collection.find_one({"_id": ObjectId(staff_id)}, {"role": 1, "department": 1, "collegename": 1})
 
         if not staff_user:
             raise AuthenticationFailed("Staff user not found.")
 
-        # Determine if user is admin
-        is_admin = staff_user.get("admin") == "true"
+        role = staff_user.get("role")
+        department = staff_user.get("department")
+        collegename = staff_user.get("collegename")
 
-        # Set up query based on user type
         mcq_collection = db['MCQ_Assessment_Data']
-        query = {} if is_admin else {"staffId": staff_id}
+        
+        # Define query based on role
+        if role == "Staff":
+            query = {"staffId": staff_id}
+        elif role == "HOD":
+            query = {"department": department}
+        elif role == "Principal":
+            query = {"college": collegename}
+        elif role == "Admin":  # SuperAdmin
+            query = {}
+        else:
+            return Response({"error": "Invalid role."}, status=403)
+
         projection = {
             "_id": 1, "contestId": 1, "assessmentOverview.name": 1, "assessmentOverview.registrationStart": 1,
             "assessmentOverview.registrationEnd": 1, "visible_to": 1, "student_details": 1,
-            "testConfiguration.questions": 1, "testConfiguration.duration": 1, "staffId": 1
+            "testConfiguration.questions": 1, "testConfiguration.duration": 1, "staffId": 1, "Overall_Status": 1
         }
         assessments_cursor = mcq_collection.find(query, projection).batch_size(100)
 
@@ -651,20 +732,16 @@ def fetch_mcq_assessments(request):
         current_time = datetime.utcnow().replace(tzinfo=timezone.utc)
 
         def process_assessment(assessment):
-            # Add the condition to skip documents without 'visible_to' and 'questions'
             if "visible_to" not in assessment or "questions" not in assessment.get("testConfiguration", {}):
                 return None
 
-            # Extract dates
             registration_start = assessment.get("assessmentOverview", {}).get("registrationStart")
             registration_end = assessment.get("assessmentOverview", {}).get("registrationEnd")
             visible_users = assessment.get("visible_to", [])
             student_details = assessment.get("student_details", [])
 
-            # Count student statuses
             yet_to_start_count = sum(1 for student in student_details if student.get("status", "").lower() == "yet to start")
 
-            # Convert string to datetime if needed
             if registration_start:
                 if isinstance(registration_start, str):
                     registration_start = datetime.fromisoformat(registration_start)
@@ -677,20 +754,22 @@ def fetch_mcq_assessments(request):
                 if registration_end.tzinfo is None:
                     registration_end = registration_end.replace(tzinfo=timezone.utc)
 
-            # Determine status
-            if registration_start and registration_end:
-                if current_time < registration_start:
-                    status = "Upcoming"
-                elif registration_start <= current_time <= registration_end:
-                    status = "Live"
-                elif current_time > registration_end:
-                    status = "Completed"
-                else:
-                    status = "Unknown"
+            overall_status = assessment.get("Overall_Status")
+            if overall_status == "closed":
+                status = "Closed"
             else:
-                status = "Date Unavailable"
+                if registration_start and registration_end:
+                    if current_time < registration_start:
+                        status = "Upcoming"
+                    elif registration_start <= current_time <= registration_end:
+                        status = "Live"
+                    elif current_time > registration_end:
+                        status = "Completed"
+                    else:
+                        status = "Unknown"
+                else:
+                    status = "Date Unavailable"
 
-            # Fetch completed count using cache
             contest_id = assessment.get("contestId")
             completed_count = get_completed_count(contest_id) if contest_id else 0
 
@@ -721,7 +800,6 @@ def fetch_mcq_assessments(request):
 
     except Exception as e:
         return Response({"error": str(e)}, status=500)
-
 
 
 @api_view(["GET", "PUT"])  # Allow both GET and PUT requests
